@@ -60,6 +60,9 @@ func pingURL(url string, client *http.Client) Result {
 	return Result{URL: url, StatusCode: resp.StatusCode, Latency: latency, Err: nil}
 }
 
+// MaxConcurrency limits the number of simultaneous network workers running at one time
+const MaxConcurrency = 3
+
 func main() {
 	targetFile := "urls.txt"
 	fmt.Printf("%s🔍 Initializing Go Concurrency Engine... Reading '%s'%s\n\n", Cyan, targetFile, Reset)
@@ -83,6 +86,9 @@ func main() {
 	// Initialize synchronization primitives
 	var wg sync.WaitGroup
 	resultChan := make(chan Result, len(urls))
+	
+	// Semaphore channel to enforce bounded concurrency limits
+	sem := make(chan struct{}, MaxConcurrency)
 
 	startTime := time.Now()
 
@@ -90,6 +96,11 @@ func main() {
 	for _, url := range urls {
 		wg.Add(1)
 		go func(targetURL string) {
+			// Acquire token: blocks execution if the 'sem' channel buffer is fully saturated
+			sem <- struct{}{}
+			
+			// Release token when worker completes, freeing up space for subsequent threads
+			defer func() { <-sem }()
 			defer wg.Done()
 			// Execute the network probe and stream the structural data into our channel
 			resultChan <- pingURL(targetURL, client)
