@@ -3,7 +3,9 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -19,12 +21,15 @@ const (
 	Cyan   = "\033[36m"
 )
 
-// Result holds the structural performance data collected from a target URL
+// Result holds the enriched performance data collected from a target URL
 type Result struct {
-	URL        string
-	StatusCode int
-	Latency    time.Duration
-	Err        error
+	URL           string
+	StatusCode    int
+	Latency       time.Duration
+	ServerHeader  string
+	ContentLength int64
+	ResolvedIP    string
+	Err           error
 }
 
 // readURLs opens the input text file and extracts non-empty target strings
@@ -46,18 +51,41 @@ func readURLs(filePath string) ([]string, error) {
 	return urls, scanner.Err()
 }
 
-// pingURL performs a fast HTTP GET request, explicitly tracking precise execution duration
-func pingURL(url string, client *http.Client) Result {
+// pingURL performs a fast HTTP GET request and resolves the network endpoint IP address
+func pingURL(targetURL string, client *http.Client) Result {
 	start := time.Now()
-	resp, err := client.Get(url)
+
+	// Resolve IP address from the URL hostname
+	ipAddress := "Unknown"
+	if parsedURL, err := url.Parse(targetURL); err == nil {
+		if ips, err := net.LookupIP(parsedURL.Hostname()); err == nil && len(ips) > 0 {
+			ipAddress = ips[0].String()
+		}
+	}
+
+	resp, err := client.Get(targetURL)
 	latency := time.Since(start)
 
 	if err != nil {
-		return Result{URL: url, StatusCode: 0, Latency: latency, Err: err}
+		return Result{URL: targetURL, StatusCode: 0, Latency: latency, ResolvedIP: ipAddress, Err: err}
 	}
 	defer resp.Body.Close()
 
-	return Result{URL: url, StatusCode: resp.StatusCode, Latency: latency, Err: nil}
+	// Extract standard server infrastructure headers
+	server := resp.Header.Get("Server")
+	if server == "" {
+		server = "N/A"
+	}
+
+	return Result{
+		URL:           targetURL,
+		StatusCode:    resp.StatusCode,
+		Latency:       latency,
+		ServerHeader:  server,
+		ContentLength: resp.ContentLength,
+		ResolvedIP:    ipAddress,
+		Err:           nil,
+	}
 }
 
 // MaxConcurrency limits the number of simultaneous network workers running at one time
@@ -86,7 +114,7 @@ func main() {
 	// Initialize synchronization primitives
 	var wg sync.WaitGroup
 	resultChan := make(chan Result, len(urls))
-	
+
 	// Semaphore channel to enforce bounded concurrency limits
 	sem := make(chan struct{}, MaxConcurrency)
 
@@ -98,10 +126,11 @@ func main() {
 		go func(targetURL string) {
 			// Acquire token: blocks execution if the 'sem' channel buffer is fully saturated
 			sem <- struct{}{}
-			
+
 			// Release token when worker completes, freeing up space for subsequent threads
 			defer func() { <-sem }()
 			defer wg.Done()
+
 			// Execute the network probe and stream the structural data into our channel
 			resultChan <- pingURL(targetURL, client)
 		}(url)
@@ -117,31 +146,46 @@ func main() {
 	successCount := 0
 	failedCount := 0
 
-	fmt.Printf("%-35s %-12s %-12s\n", "TARGET ENDPOINT", "STATUS", "LATENCY")
-	fmt.Println(strings.Repeat("-", 65))
+	// Enriched table headers matching our new data streams
+	fmt.Printf("%-24s %-10s %-10s %-16s %-12s %s\n", "TARGET ENDPOINT", "STATUS", "LATENCY", "RESOLVED IP", "SIZE(BYTES)", "SERVER")
+	fmt.Println(strings.Repeat("-", 90))
 
 	for res := range resultChan {
+		// Truncate long URLs gracefully for table layout alignment
+		displayURL := res.URL
+		if len(displayURL) > 24 {
+			displayURL = displayURL[:21] + "..."
+		}
+
 		if res.Err != nil {
-			fmt.Printf("%-35s %s%-12s%s %-12s\n", res.URL, Red, "FAILED", Reset, res.Latency.Round(time.Millisecond))
+			fmt.Printf("%-24s %s%-10s%s %-10s %-16s %-12s %s\n",
+				   displayURL, Red, "FAILED", Reset, res.Latency.Round(time.Millisecond), res.ResolvedIP, "0", "N/A")
 			failedCount++
 		} else {
 			statusStr := fmt.Sprintf("HTTP %d", res.StatusCode)
+			sizeStr := fmt.Sprintf("%d", res.ContentLength)
+			if res.ContentLength < 0 {
+				sizeStr = "Chunked" // Handle dynamic streaming transfer-encodings
+			}
+
+			colorCode := Yellow
 			if res.StatusCode == 200 {
-				fmt.Printf("%-35s %s%-12s%s %-12s\n", res.URL, Green, statusStr, Reset, res.Latency.Round(time.Millisecond))
+				colorCode = Green
 				successCount++
 			} else {
-				fmt.Printf("%-35s %s%-12s%s %-12s\n", res.URL, Yellow, statusStr, Reset, res.Latency.Round(time.Millisecond))
 				successCount++
 			}
+
+			fmt.Printf("%-24s %s%-10s%s %-10s %-16s %-12s %s\n",
+				   displayURL, colorCode, statusStr, Reset, res.Latency.Round(time.Millisecond), res.ResolvedIP, sizeStr, res.ServerHeader)
 		}
 	}
 
 	totalDuration := time.Since(startTime)
-	fmt.Println(strings.Repeat("-", 65))
+	fmt.Println(strings.Repeat("-", 90))
 	fmt.Printf("\n📊 Execution Summary:\n")
 	fmt.Printf("• Total Targets Processed: %d\n", len(urls))
-	fmt.Printf("• Successful Enpoints:    %s%d%s\n", Green, successCount, Reset)
+	fmt.Printf("• Successful Endpoints:   %s%d%s\n", Green, successCount, Reset)
 	fmt.Printf("• Failed/Unreachable:     %s%d%s\n", Red, failedCount, Reset)
 	fmt.Printf("• Total Engine Wall Time: %s%v%s\n", Cyan, totalDuration.Round(time.Millisecond), Reset)
 }
-

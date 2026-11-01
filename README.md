@@ -4,6 +4,7 @@ A high-performance, asynchronous CLI network utility engineered in Go. The appli
 
 ## 🛠️ Architectural Design & Engineering Choices
 
+- **Multi-Layer Telemetry Extraction:** Simultaneously queries network layers to parse DNS IP records via `net.LookupIP` and parses HTTP infrastructure headers (`Server`, `Content-Length`) alongside connection metrics.
 - **Bounded Concurrency (Worker Pool Pattern):** Rather than blindly spawning unlimited threads that risk socket exhaustion, file descriptor leaks, or firewall rate-limiting bans, the engine implements a token-based channel semaphore to strictly cap concurrent workers at `MaxConcurrency`.
 - **True Concurrency via Goroutines:** Network I/O operations run inside lightweight, non-blocking green-threads (`Goroutines`), allowing the engine to maximize multi-core CPU efficiency during simultaneous probes.
 - **Safe Thread Synchronization:** Utilizes `sync.WaitGroup` to orchestrate deterministic lifecycles for spawned processes, avoiding dangling background routines, while utilizing `defer` rollbacks to ensure tokens clear under network failure modes.
@@ -13,7 +14,7 @@ A high-performance, asynchronous CLI network utility engineered in Go. The appli
 ## 🧳 Tech Stack & Market Skills
 - **Language:** Go (Golang)
 - **Concurrency Concepts:** Bounded Concurrency, Semaphore Primitives, Goroutines, Channels, Worker Synchronization (`sync.WaitGroup`)
-- **Network Engineering:** HTTP Client Tuning, Precise Latency Calculations via `time.Duration`, I/O Streaming
+- **Network Engineering:** DNS Hostname Resolution, Server Header Inspection, HTTP Content Payload Mapping, Precise Latency Tuning via `time.Duration`
 
 ## 📦 Installation & Setup
 
